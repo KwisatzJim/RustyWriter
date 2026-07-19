@@ -4,6 +4,9 @@ A minimal, fast, cross-platform disk-imaging tool — the same job as
 balenaEtcher, written in Rust with a Tauri GUI. Targets macOS and
 Linux for v1.
 
+<img width="892" height="672" alt="Screenshot 2026-07-19 at 2 40 21 PM" src="https://github.com/user-attachments/assets/2402755f-07eb-4ab6-a73f-5e04f355e741" />
+
+
 ## Architecture
 
 The interesting design problem in a tool like this is: writing to a
