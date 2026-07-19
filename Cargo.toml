@@ -1,0 +1,14 @@
+[workspace]
+resolver = "2"
+members = [
+    "helper",
+    "src-tauri",
+]
+
+# Keep both binaries on the same profile settings so release builds
+# of the privileged helper get the same optimization/strip behavior
+# as the GUI app.
+[profile.release]
+opt-level = 3
+lto = true
+strip = true

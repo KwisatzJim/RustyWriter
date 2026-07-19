@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>RustyWriter</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="titlebar">
+    <div class="mark" aria-hidden="true"></div>
+    <div class="titles">
+      <h1>RustyWriter</h1>
+      <p>Flash disk images to removable drives.</p>
+    </div>
+  </header>
+
+  <div id="drag-overlay" class="drag-overlay hidden">
+    <div class="drag-overlay-inner">Drop image to select it</div>
+  </div>
+
+  <main id="setup-view" class="steps">
+    <section class="step" data-step="1">
+      <div class="step-index">01</div>
+      <div class="step-body">
+        <h2>Select an image</h2>
+        <p class="hint">.img, .iso, .img.gz, .img.xz, or .zip</p>
+        <button id="pick-image-btn" class="btn btn-secondary">Choose file&hellip;</button>
+        <p class="dropzone-hint">or drag and drop a file anywhere in this window</p>
+        <div id="image-summary" class="summary summary-empty">No image selected</div>
+      </div>
+    </section>
+
+    <section class="step" data-step="2">
+      <div class="step-index">02</div>
+      <div class="step-body">
+        <div class="step-heading-row">
+          <h2>Select target drive</h2>
+          <button id="refresh-devices-btn" class="btn btn-ghost" title="Refresh drive list">&#8635;</button>
+        </div>
+        <p class="hint">Only removable, external drives are ever listed here.</p>
+        <ul id="device-list" class="device-list"></ul>
+        <p id="device-empty" class="summary summary-empty">No removable drives detected</p>
+      </div>
+    </section>
+
+    <section class="step" data-step="3">
+      <div class="step-index">03</div>
+      <div class="step-body">
+        <h2>Write</h2>
+        <label class="checkbox-row">
+          <input type="checkbox" id="verify-checkbox" checked />
+          <span>Verify after writing (recommended)</span>
+        </label>
+        <div class="warning-banner" id="warning-banner">
+          Selecting a drive below will <strong>permanently erase everything on it.</strong>
+        </div>
+        <button id="flash-btn" class="btn btn-primary" disabled>Flash</button>
+      </div>
+    </section>
+  </main>
+
+  <div id="confirm-modal" class="modal-backdrop hidden">
+    <div class="modal">
+      <h3>Erase and write to this drive?</h3>
+      <p id="confirm-detail" class="confirm-detail"></p>
+      <p class="confirm-warning">This cannot be undone. All data on the drive will be lost.</p>
+      <div id="large-drive-warning" class="large-drive-warning hidden">
+        This is a <strong>large drive</strong>. Flash drives are usually well under this size —
+        double-check this isn't an internal or secondary storage drive before continuing.
+      </div>
+      <label id="large-drive-confirm-row" class="checkbox-row hidden">
+        <input type="checkbox" id="large-drive-confirm-checkbox" />
+        <span>Yes, I'm sure this is the right drive</span>
+      </label>
+      <div class="modal-actions">
+        <button id="confirm-cancel-btn" class="btn btn-ghost">Cancel</button>
+        <button id="confirm-proceed-btn" class="btn btn-primary">Yes, erase and write</button>
+      </div>
+    </div>
+  </div>
+
+  <main id="progress-view" class="progress-view hidden">
+    <h2 id="progress-phase-label">Starting&hellip;</h2>
+    <div class="progress-track">
+      <div id="progress-fill" class="progress-fill" style="width: 0%"></div>
+    </div>
+    <p id="progress-detail" class="progress-detail">&nbsp;</p>
+    <div id="result-banner" class="result-banner hidden"></div>
+    <button id="done-btn" class="btn btn-secondary hidden">Done</button>
+  </main>
+
+  <script src="main.js"></script>
+</body>
+</html>
