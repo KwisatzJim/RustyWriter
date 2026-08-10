@@ -85,6 +85,20 @@ async fn run_flash(app: AppHandle, req: FlashRequest) -> anyhow::Result<()> {
         );
     }
 
+    // AppImages mount their contents via FUSE without `allow_other`,
+    // which means only the invoking user's own processes can read
+    // those files - not even root. Since pkexec runs as root, it
+    // can't reach a helper binary sitting inside an AppImage's mount
+    // point (paths like /tmp/.mount_XXXXXX/...), failing with a
+    // plain "Permission denied" that has nothing to do with the
+    // helper's own permissions. Copying it out to a normal temp file
+    // first sidesteps the FUSE restriction entirely. This only
+    // matters on Linux - macOS .app bundles are ordinary files on
+    // disk, not a FUSE mount, so pkexec's macOS equivalent
+    // (osascript) never runs into this.
+    #[cfg(target_os = "linux")]
+    let helper = stage_helper_binary(&helper).await?;
+
     // Stage the image (decompressing if needed) into a plain temp
     // file *before* the privileged helper is launched. This runs in
     // this unprivileged process, which is the one the OS granted
@@ -108,7 +122,26 @@ async fn run_flash(app: AppHandle, req: FlashRequest) -> anyhow::Result<()> {
     let run_result = run_helper(&app, &helper, &staged.path, &req.device_path, req.verify).await;
 
     let _ = tokio::fs::remove_file(&staged.path).await;
+    #[cfg(target_os = "linux")]
+    {
+        let _ = tokio::fs::remove_file(&helper).await;
+    }
     run_result
+}
+
+#[cfg(target_os = "linux")]
+async fn stage_helper_binary(helper: &std::path::Path) -> anyhow::Result<PathBuf> {
+    let dest = crate::shared_temp_dir().join(format!("rustywriter-helper-{}", uuid::Uuid::new_v4()));
+    tokio::fs::copy(helper, &dest)
+        .await
+        .context("copying the helper binary out of the app bundle")?;
+
+    use std::os::unix::fs::PermissionsExt;
+    let mut perms = tokio::fs::metadata(&dest).await?.permissions();
+    perms.set_mode(0o755);
+    tokio::fs::set_permissions(&dest, perms).await?;
+
+    Ok(dest)
 }
 
 async fn run_helper(
@@ -118,11 +151,18 @@ async fn run_helper(
     device_path: &str,
     verify: bool,
 ) -> anyhow::Result<()> {
-    let progress_path = std::env::temp_dir().join(format!(
+    let progress_path = crate::shared_temp_dir().join(format!(
         "rustywriter-progress-{}.jsonl",
         uuid::Uuid::new_v4()
     ));
-    tokio::fs::write(&progress_path, b"").await?;
+    // Deliberately not pre-creating this file. A hardened pkexec
+    // doesn't necessarily grant the elevated process CAP_DAC_OVERRIDE,
+    // so a root process can still fail to write to a file some other
+    // user already owns, even under /tmp. Letting the helper (which
+    // really is root) create the file itself avoids that entirely -
+    // it'll own what it creates. The tailer below already handles the
+    // file not existing yet by retrying, so this is a safe no-op
+    // ordering change.
 
     let mut args = vec![
         "--image".to_string(),
@@ -138,10 +178,25 @@ async fn run_helper(
 
     let mut cmd = build_elevated_command(helper, &args);
     cmd.stdin(Stdio::null());
+    cmd.stdout(Stdio::null());
+    cmd.stderr(Stdio::piped());
 
     let mut child = cmd
         .spawn()
         .context("launching the privileged helper (the auth dialog may have been cancelled)")?;
+
+    // pkexec/osascript print their own errors (a cancelled auth
+    // prompt, no polkit agent available, etc) to stderr rather than
+    // through our progress-file protocol, since that failure can
+    // happen before the helper ever runs at all. Capture it so it
+    // reaches the app's error banner instead of only a terminal the
+    // person may not be watching.
+    let mut child_stderr = child.stderr.take().expect("stderr was piped");
+    let stderr_task = tokio::spawn(async move {
+        let mut buf = Vec::new();
+        let _ = tokio::io::AsyncReadExt::read_to_end(&mut child_stderr, &mut buf).await;
+        String::from_utf8_lossy(&buf).trim().to_string()
+    });
 
     let tail_app = app.clone();
     let tail_path = progress_path.clone();
@@ -157,10 +212,22 @@ async fn run_helper(
     // the UI falls back to a generic message.
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     tailer.abort();
+    // This cleanup can silently fail now that the helper (root) owns
+    // the file instead of us: /tmp's sticky bit restricts deletion to
+    // the file's owner (or root), so a non-root process can't remove
+    // a root-owned file there even though the directory itself is
+    // world-writable. Harmless either way - just a leftover temp file
+    // instead of a functional problem.
     let _ = tokio::fs::remove_file(&progress_path).await;
+    let captured_stderr = stderr_task.await.unwrap_or_default();
 
     if !status.success() {
-        anyhow::bail!("flashing failed - see the progress log emitted just before this for the reason");
+        if captured_stderr.is_empty() {
+            anyhow::bail!(
+                "flashing failed - see the progress log emitted just before this for the reason"
+            );
+        }
+        anyhow::bail!("flashing failed: {captured_stderr}");
     }
     Ok(())
 }

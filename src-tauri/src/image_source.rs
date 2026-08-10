@@ -32,7 +32,6 @@ fn detect_format(path: &Path) -> Result<ImageFormat> {
 
 pub struct StagedImage {
     pub path: PathBuf,
-    pub total_bytes: u64,
 }
 
 /// Reads the user-picked image - wherever it lives, including
@@ -51,7 +50,7 @@ pub struct StagedImage {
 /// at all.
 pub fn stage_image(source_path: &Path, mut on_progress: impl FnMut(u64, Option<u64>)) -> Result<StagedImage> {
     let format = detect_format(source_path)?;
-    let dest_path = std::env::temp_dir().join(format!("rustywriter-stage-{}.img", uuid::Uuid::new_v4()));
+    let dest_path = crate::shared_temp_dir().join(format!("rustywriter-stage-{}.img", uuid::Uuid::new_v4()));
     let mut dest = File::create(&dest_path).context("creating staging file")?;
 
     // Decompressed size isn't knowable up front for streaming
@@ -99,6 +98,5 @@ pub fn stage_image(source_path: &Path, mut on_progress: impl FnMut(u64, Option<u
     dest.flush().context("flushing staging file")?;
     Ok(StagedImage {
         path: dest_path,
-        total_bytes: written,
     })
 }
