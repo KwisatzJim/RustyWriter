@@ -4,9 +4,6 @@ A minimal, fast, cross-platform disk-imaging tool — the same job as
 balenaEtcher, written in Rust with a Tauri GUI. Targets macOS and
 Linux for v1.
 
-<img width="892" height="672" alt="Screenshot 2026-07-19 at 2 40 21 PM" src="https://github.com/user-attachments/assets/2402755f-07eb-4ab6-a73f-5e04f355e741" />
-
-
 ## Architecture
 
 The interesting design problem in a tool like this is: writing to a
@@ -130,6 +127,27 @@ script first:
 ```bash
 ./scripts/prepare-sidecar.sh
 cargo tauri build
+```
+
+**On Linux, use `./scripts/build-linux-release.sh` instead** of the
+two commands above. On Arch-family distros (CachyOS, Arch,
+EndeavourOS, etc), `cargo tauri build`'s AppImage step fails with
+`failed to run linuxdeploy` because the system `strip` (from newer
+binutils) produces ELF sections linuxdeploy's own bundled `strip`
+doesn't recognize - this is an upstream linuxdeploy/binutils gap, not
+a RustyWriter bug, and the standard workaround is building with
+`NO_STRIP=true` set. The script bakes that in, so it's just:
+
+```bash
+./scripts/build-linux-release.sh
+```
+
+If it still fails after that, it's usually FUSE - AppImages need it
+to mount themselves at bundle time:
+
+```bash
+sudo pacman -S fuse2      # Arch/CachyOS
+sudo apt install fuse     # Debian/Ubuntu/Pop!_OS
 ```
 
 ## macOS: Full Disk Access is required, and it's not optional
