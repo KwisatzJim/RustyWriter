@@ -43,6 +43,9 @@ jobs:
       - name: Check frontend JavaScript
         run: node --check ui/main.js
 
+      - name: Prepare helper sidecar
+        run: ./scripts/prepare-sidecar.sh
+
       - name: Run tests
         run: cargo test --workspace --all-targets --locked
 
