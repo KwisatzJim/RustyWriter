@@ -1,10 +1,18 @@
 # RustyWriter
 
-A minimal, fast, cross-platform disk-imaging tool — the same job as
-balenaEtcher, written in Rust with a Tauri GUI. Targets macOS and
-Linux for v1.
+[![CI](https://github.com/KwisatzJim/RustyWriter/actions/workflows/ci.yml/badge.svg)](https://github.com/KwisatzJim/RustyWriter/actions/workflows/ci.yml)
 
-<img width="906" height="765" alt="Screenshot 2026-08-10 at 5 21 51 PM" src="https://github.com/user-attachments/assets/fc7caa7a-0256-46c9-b223-50b671ed232e" />
+A minimal, fast, cross-platform disk-imaging tool — the same job as
+balenaEtcher, written in Rust with a Tauri GUI. RustyWriter supports
+macOS and Linux.
+
+### Choose an image
+
+![RustyWriter image selection screen](docs/screenshots/rustywriter-choose-image.png)
+
+### Review before writing
+
+![RustyWriter review and write screen](docs/screenshots/rustywriter-review.png)
 
 
 ## Architecture
@@ -45,16 +53,13 @@ independent of the permissions issue: less code running as root is
 just good practice.
 
 **Why a file for progress, not stdout:** on macOS the helper is
-launched via `osascript -e 'do shell script "..." with administrator
-privileges'`, which buffers the child's entire stdout until it exits
-and doesn't support streaming stdin either. That makes a live
-progress bar over stdout/stdin impossible. Instead the helper appends
-newline-delimited JSON to a temp file, and the Tauri app polls that
-file like `tail -f`, re-emitting each line as a `flash-progress`
-window event the frontend listens for. This works identically on
-Linux (`pkexec`) and macOS. Progress during the app's own staging
-step uses the same event, emitted directly (no file needed there,
-since it's all in-process).
+launched through AppleScript's administrator-privileges flow, which
+buffers the child's output until it exits. That makes a live progress
+bar over stdout impossible. Instead the app safely creates a uniquely
+named progress file, the helper appends newline-delimited JSON, and
+the app follows it like `tail -f`. The app owns and removes this file
+after success, failure, or cancellation. This works identically on
+Linux (`pkexec`) and macOS.
 
 **Image pipeline:** format is sniffed from magic bytes, not the file
 extension (a renamed file shouldn't corrupt a flash). Gzip, xz, and
@@ -68,12 +73,14 @@ while it's being written to the device (free — no extra pass).
 After writing, the helper re-reads exactly that many bytes back off
 the device, hashes them, and compares digests.
 
-**Safety:** `devices.rs` never lists a non-removable/internal disk —
-on macOS anything where `diskutil info` reports `Internal: true` is
-excluded outright; on Linux, only devices under `/sys/block` with
-`removable == 1` are listed. The GUI additionally requires an
-explicit confirm-modal click naming the exact drive and its size
-before anything is touched.
+**Safety:** on macOS, internal and virtual disk-image devices are
+excluded. On Linux, removable media and USB-attached storage are
+eligible, but the physical disk backing the running root filesystem
+is excluded, including roots layered through device-mapper. The
+backend re-enumerates the target immediately before elevation, checks
+that the decompressed image is nonempty and fits, and refuses to write
+unless every target filesystem is confirmed unmounted. The GUI also
+requires explicit confirmation naming the exact drive and size.
 
 ## Project layout
 
@@ -81,10 +88,10 @@ before anything is touched.
 RustyWriter/
 ├── helper/            # privileged CLI worker (rustywriter-helper)
 │                       # only ever touches: a staged plain file, the
-│                       # device, and the progress file
+│                       # device, progress file, and cancellation signal
 ├── src-tauri/          # the Tauri app (unprivileged)
 │   ├── src/
-│   │   ├── main.rs        # commands: list_devices, file_size, start_flash
+│   │   ├── main.rs        # commands and managed flash/cancel state
 │   │   ├── devices.rs     # removable-drive enumeration (macOS/Linux)
 │   │   ├── image_source.rs # sniffs format, decompresses/stages the
 │   │   │                    # picked image into a plain temp file
@@ -94,7 +101,9 @@ RustyWriter/
 │   └── capabilities/
 ├── ui/                 # plain HTML/CSS/JS frontend (no npm needed)
 └── scripts/
-    └── prepare-sidecar.sh
+    ├── prepare-sidecar.sh
+    ├── build-macos-release.sh
+    └── build-linux-release.sh
 ```
 
 ## Building
@@ -120,30 +129,35 @@ In dev mode, `flash.rs` finds `rustywriter-helper` sitting next to the
 main binary in the shared workspace `target/` directory automatically
 — no extra setup needed.
 
-### Release build
+### Release builds
 
 Packaged apps need the helper bundled as a Tauri "sidecar", which
 requires it to be named with the host's target-triple suffix
-(`rustywriter-helper-x86_64-apple-darwin`, etc). Run the staging
-script first:
+(`rustywriter-helper-aarch64-apple-darwin`, etc). The platform build
+scripts compile and stage that helper before invoking Tauri.
+
+On macOS:
 
 ```bash
-./scripts/prepare-sidecar.sh
-cargo tauri build
+./scripts/build-macos-release.sh
 ```
 
-**On Linux, use `./scripts/build-linux-release.sh` instead** of the
-two commands above. On Arch-family distros (CachyOS, Arch,
+This produces the macOS application bundle and DMG for the current
+Mac's architecture.
+
+On Linux:
+
+```bash
+./scripts/build-linux-release.sh
+```
+
+On Arch-family distros (CachyOS, Arch,
 EndeavourOS, etc), `cargo tauri build`'s AppImage step fails with
 `failed to run linuxdeploy` because the system `strip` (from newer
 binutils) produces ELF sections linuxdeploy's own bundled `strip`
 doesn't recognize - this is an upstream linuxdeploy/binutils gap, not
 a RustyWriter bug, and the standard workaround is building with
-`NO_STRIP=true` set. The script bakes that in, so it's just:
-
-```bash
-./scripts/build-linux-release.sh
-```
+`NO_STRIP=true`. The Linux script includes that automatically.
 
 If it still fails after that, it's usually FUSE - AppImages need it
 to mount themselves at bundle time:
@@ -172,14 +186,12 @@ RustyWriter has to grant it once, manually:
    `scripts/prepare-sidecar.sh` staged it to)
 3. Toggle it on, then try flashing again.
 
-This grant is tied to the binary's code signature. An unsigned/
-ad-hoc-signed dev build can have the grant silently invalidated by a
-rebuild, requiring you to re-add it in System Settings. A release
-build signed with a stable Developer ID certificate doesn't have this
-problem - the grant persists across rebuilds/updates. Worth
-mentioning this clearly in-app (a first-run hint, or a dedicated error
-message when the device open fails with "Operation not permitted") so
-it isn't mysterious to whoever downloads a build of this later.
+This grant is tied to the binary's code signature. An unsigned or
+ad-hoc-signed development build can have the grant invalidated by a
+rebuild, requiring you to add it again. A release signed with a stable
+Developer ID identity keeps the permission across updates. If raw
+access is denied, RustyWriter reports the exact Full Disk Access steps
+in its error message.
 
 ## Safety features
 
@@ -197,8 +209,36 @@ it isn't mysterious to whoever downloads a build of this later.
   rather than plain HTML5 `ondrop`, because `dragDropEnabled` in
   `tauri.conf.json` makes the webview intercept OS file drops before
   they'd ever reach a DOM drop event.
+- **Target revalidation**: the frontend sends a device identifier, not
+  a writable path. The Rust backend rebuilds its removable-drive
+  allow-list after staging and uses the freshly discovered path.
+- **Capacity and free-space checks**: staging stops before the
+  decompressed image can exceed the selected drive or consume the
+  final 256 MiB of temporary-disk space.
+- **Fail-closed unmounting**: the helper independently confirms that
+  no target filesystem remains mounted before opening the device.
+- **Verification**: optional SHA-256 verification re-reads exactly the
+  bytes written and compares them with the source hash.
+- **Cancellation**: staging, writing, and verification can be
+  cancelled. Cancelling after writing begins clearly warns that the
+  target may contain a partial image.
+- **Safe ZIP selection**: a single-file archive is accepted directly;
+  a multi-file archive must contain exactly one unambiguous `.img`,
+  `.iso`, or `.raw` entry.
+- **Webview hardening**: device metadata is rendered as text, a
+  restrictive Content Security Policy is enabled, and the webview has
+  no shell permission.
 
-## Known v1 limitations / next steps
+## User interface
+
+- Native file picker and drag-and-drop image selection
+- Live staging, writing, and verification progress
+- Actionable errors and post-write eject warnings
+- Keyboard and screen-reader support
+- Light, Dark, and System appearance modes, with the preference saved
+  across launches
+
+## Current limitations
 
 - **Progress percentage while staging gzip/xz images**: the
   decompressed size isn't known ahead of time for streaming gzip/xz,
@@ -209,8 +249,9 @@ it isn't mysterious to whoever downloads a build of this later.
   percentage throughout, since the zip central directory records the
   exact uncompressed size up front.
 - **Staging needs free disk space** equal to the image's decompressed
-  size in the OS temp directory (typically `/tmp`), since the whole
-  image is materialized there before writing starts.
+  size in the OS temp directory (typically `/tmp`). RustyWriter checks
+  space while staging and preserves a 256 MiB system reserve, but the
+  complete decompressed image still has to fit there.
 - **Windows isn't implemented yet.** The helper's device-write and
   hashing logic is portable, but `devices.rs` (drive enumeration) and
   `platform.rs` (unmount/eject) both need Windows-specific
@@ -218,21 +259,13 @@ it isn't mysterious to whoever downloads a build of this later.
   `IOCTL_VOLUME_*` for enumeration, `DeviceIoControl` with
   `FSCTL_LOCK_VOLUME` for exclusive access, and elevation via a UAC
   prompt instead of pkexec/osascript).
-- **No cancel button yet** — once a flash starts, it runs to
-  completion or failure. Adding cancellation means having the helper
-  watch for a sentinel file or signal between chunk writes and abort
-  cleanly (closing the device handle mid-write is safe; the drive is
-  just left partially written, same as pulling it during any other
-  flash tool).
-- **No drag-and-drop image selection**, just the file picker button —
-  easy to add to `main.js` later.
 
-## A note on sandboxed verification
+## Validation
 
-The `rustywriter-helper` crate (all the byte-level image/device/hash
-logic — the highest-risk, most novel part of this project) was
-compiled and type-checked while writing this. The Tauri/GUI half
-(`src-tauri`) could not be fully compiled in the environment this was
-written in, since it needs system WebKitGTK packages that weren't
-available there — run `cargo tauri dev` locally as your first step to
-shake out anything that needs adjusting on your actual machine.
+- The workspace test suite and strict Clippy checks pass on macOS.
+- A complete write, SHA-256 verification, and eject cycle has been
+  successfully tested with disposable media on macOS.
+- The application has been built and run successfully on Linux.
+- GitHub Actions is configured to run the locked test suite and strict
+  Clippy checks on both macOS 15 and Ubuntu 24.04 for pushes and pull
+  requests.

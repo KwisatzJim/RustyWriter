@@ -10,6 +10,10 @@ use std::io::Read;
 use std::io::Write;
 use std::path::PathBuf;
 
+#[derive(Debug, thiserror::Error)]
+#[error("operation cancelled by the user; the target may contain a partial image")]
+struct Cancelled;
+
 const CHUNK_SIZE: usize = 4 * 1024 * 1024; // 4 MiB
 const PROGRESS_EVERY_BYTES: u64 = 16 * 1024 * 1024; // don't spam the UI
 
@@ -43,6 +47,10 @@ struct Args {
     /// (the Tauri app) tails this file.
     #[arg(long)]
     progress_file: PathBuf,
+
+    /// Sentinel file created by the app when the user requests cancellation.
+    #[arg(long)]
+    cancel_file: PathBuf,
 }
 
 fn main() {
@@ -56,11 +64,22 @@ fn main() {
     };
 
     if let Err(e) = run(&args, &mut progress) {
-        progress.emit(&Progress::Error {
-            message: format!("{e:#}"),
-        });
+        if e.downcast_ref::<Cancelled>().is_some() {
+            progress.emit(&Progress::Cancelled);
+        } else {
+            progress.emit(&Progress::Error {
+                message: format!("{e:#}"),
+            });
+        }
         std::process::exit(1);
     }
+}
+
+fn check_cancelled(args: &Args) -> Result<()> {
+    if args.cancel_file.exists() {
+        return Err(Cancelled.into());
+    }
+    Ok(())
 }
 
 fn run(args: &Args, progress: &mut ProgressWriter) -> Result<()> {
@@ -72,9 +91,11 @@ fn run(args: &Args, progress: &mut ProgressWriter) -> Result<()> {
     }
 
     progress.emit(&Progress::Starting);
+    check_cancelled(args)?;
 
     progress.emit(&Progress::Unmounting);
     platform::unmount_device(&args.device).context("unmounting target device")?;
+    check_cancelled(args)?;
 
     let total_bytes = std::fs::metadata(&args.image)
         .context("reading staged image metadata")?
@@ -107,6 +128,7 @@ fn run(args: &Args, progress: &mut ProgressWriter) -> Result<()> {
     let mut last_reported: u64 = 0;
 
     loop {
+        check_cancelled(args)?;
         let n = source.read(&mut buf).context("reading from staged image")?;
         if n == 0 {
             break;
@@ -167,6 +189,7 @@ fn run(args: &Args, progress: &mut ProgressWriter) -> Result<()> {
         let mut last_reported_verify: u64 = 0;
 
         while remaining > 0 {
+            check_cancelled(args)?;
             let want = remaining.min(CHUNK_SIZE as u64) as usize;
             let n = device_read
                 .read(&mut buf[..want])
@@ -203,11 +226,16 @@ fn run(args: &Args, progress: &mut ProgressWriter) -> Result<()> {
     }
 
     progress.emit(&Progress::Ejecting);
-    platform::eject_device(&args.device).ok();
+    let eject_warning = platform::eject_device(&args.device).err().map(|error| {
+        format!(
+            "The image was written successfully, but the drive could not be ejected automatically: {error:#}. Eject it manually before disconnecting it."
+        )
+    });
 
     progress.emit(&Progress::Done {
         success: true,
         verified,
+        eject_warning,
     });
     Ok(())
 }

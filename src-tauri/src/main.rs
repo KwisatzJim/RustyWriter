@@ -35,9 +35,14 @@ fn list_devices() -> Result<Vec<devices::DeviceInfo>, String> {
 
 #[tauri::command]
 fn file_size(path: String) -> Result<u64, String> {
-    std::fs::metadata(&path)
-        .map(|m| m.len())
-        .map_err(|e| format!("couldn't read {path}: {e}"))
+    let metadata = std::fs::metadata(&path).map_err(|e| format!("couldn't read {path}: {e}"))?;
+    if !metadata.is_file() {
+        return Err(format!("{path} is not a file"));
+    }
+    if metadata.len() == 0 {
+        return Err(format!("{path} is empty"));
+    }
+    Ok(metadata.len())
 }
 
 /// WebKitGTK's DMABUF renderer frequently fails to initialize on Linux
@@ -71,9 +76,14 @@ fn main() {
     apply_linux_webkit_workarounds();
 
     tauri::Builder::default()
-        .plugin(tauri_plugin_shell::init())
+        .manage(flash::FlashControl::default())
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![list_devices, file_size, flash::start_flash])
+        .invoke_handler(tauri::generate_handler![
+            list_devices,
+            file_size,
+            flash::start_flash,
+            flash::cancel_flash
+        ])
         .run(tauri::generate_context!())
         .expect("error while running RustyWriter");
 }

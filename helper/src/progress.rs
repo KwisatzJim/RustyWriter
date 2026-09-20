@@ -28,7 +28,9 @@ pub enum Progress {
     Done {
         success: bool,
         verified: bool,
+        eject_warning: Option<String>,
     },
+    Cancelled,
     Error {
         message: String,
     },
@@ -40,7 +42,17 @@ pub struct ProgressWriter {
 
 impl ProgressWriter {
     pub fn open(path: &Path) -> io::Result<Self> {
-        let file = File::options().create(true).append(true).open(path)?;
+        let mut options = File::options();
+        options.append(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NOFOLLOW);
+        }
+        // The unprivileged app creates this file safely before
+        // elevation. The helper must never create or follow a symlink
+        // supplied at a privileged boundary.
+        let file = options.open(path)?;
         Ok(Self { file })
     }
 

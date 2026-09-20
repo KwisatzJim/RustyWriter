@@ -12,16 +12,16 @@
       {
         "label": "main",
         "title": "RustyWriter",
-        "width": 780,
-        "height": 560,
+        "width": 860,
+        "height": 680,
         "resizable": true,
-        "minWidth": 620,
-        "minHeight": 460,
+        "minWidth": 640,
+        "minHeight": 540,
         "dragDropEnabled": true
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' asset: data:; style-src 'self' 'unsafe-inline'; script-src 'self'"
     }
   },
   "bundle": {

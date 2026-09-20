@@ -2,91 +2,68 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>RustyWriter</title>
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
   <header class="titlebar">
-    <div class="mark" aria-hidden="true"></div>
-    <div class="titles">
-      <h1>RustyWriter</h1>
-      <p>Flash disk images to removable drives.</p>
-    </div>
+    <div class="brand"><div class="mark" aria-hidden="true"></div><div class="titles"><h1>RustyWriter</h1><p>Flash disk images to removable drives.</p></div></div>
+    <label class="theme-control"><span>Appearance</span><select id="theme-select"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label>
   </header>
 
-  <div id="drag-overlay" class="drag-overlay hidden">
-    <div class="drag-overlay-inner">Drop image to select it</div>
-  </div>
+  <div id="drag-overlay" class="drag-overlay hidden" aria-hidden="true"><div class="drag-overlay-inner">Drop image to select it</div></div>
 
-  <main id="setup-view" class="steps">
-    <section class="step" data-step="1">
-      <div class="step-index">01</div>
-      <div class="step-body">
-        <h2>Select an image</h2>
-        <p class="hint">.img, .iso, .img.gz, .img.xz, or .zip</p>
-        <button id="pick-image-btn" class="btn btn-secondary">Choose file&hellip;</button>
-        <p class="dropzone-hint">or drag and drop a file anywhere in this window</p>
-        <div id="image-summary" class="summary summary-empty">No image selected</div>
+  <main id="setup-view" class="wizard-shell">
+    <nav class="stepper" aria-label="Write image steps">
+      <button class="step-marker active" data-go-step="0" type="button" aria-current="step"><span class="step-number">1</span><span class="step-label">Choose image</span></button>
+      <span class="step-line" aria-hidden="true"></span>
+      <button class="step-marker" data-go-step="1" type="button" disabled><span class="step-number">2</span><span class="step-label">Select drive</span></button>
+      <span class="step-line" aria-hidden="true"></span>
+      <button class="step-marker" data-go-step="2" type="button" disabled><span class="step-number">3</span><span class="step-label">Review &amp; write</span></button>
+    </nav>
+
+    <section id="image-step" class="wizard-screen active" data-screen="0">
+      <div class="screen-heading"><p class="eyebrow">Step 1 of 3</p><h2 tabindex="-1">Choose a disk image</h2><p>Select the operating system or disk image you want to write.</p></div>
+      <div class="dropzone">
+        <div class="image-icon" aria-hidden="true"><span></span></div>
+        <h3>Drop an image here</h3>
+        <p class="dropzone-hint">IMG, ISO, IMG.GZ, IMG.XZ, or ZIP</p>
+        <span class="or-divider">or</span>
+        <button id="pick-image-btn" class="btn btn-primary btn-auto" type="button">Choose image&hellip;</button>
+        <div id="image-summary" class="summary summary-empty" aria-live="polite">No image selected</div>
       </div>
     </section>
 
-    <section class="step" data-step="2">
-      <div class="step-index">02</div>
-      <div class="step-body">
-        <div class="step-heading-row">
-          <h2>Select target drive</h2>
-          <button id="refresh-devices-btn" class="btn btn-ghost" title="Refresh drive list">&#8635;</button>
-        </div>
-        <p class="hint">Only removable, external drives are ever listed here.</p>
-        <ul id="device-list" class="device-list"></ul>
-        <p id="device-empty" class="summary summary-empty">No removable drives detected</p>
-      </div>
+    <section id="drive-step" class="wizard-screen" data-screen="1" hidden>
+      <div class="screen-heading"><p class="eyebrow">Step 2 of 3</p><h2 tabindex="-1">Select the target drive</h2><p>Only removable, external drives are shown. The selected drive will be erased.</p></div>
+      <div class="selected-source compact-card"><div class="mini-icon" aria-hidden="true"></div><div><span class="card-label">Selected image</span><strong id="drive-image-name">No image selected</strong><small id="drive-image-meta"></small></div><button id="change-image-btn" class="btn btn-ghost" type="button">Change</button></div>
+      <div class="list-heading"><span>Available drives</span><button id="refresh-devices-btn" class="btn btn-secondary refresh-button" type="button" title="Refresh drive list" aria-label="Refresh drive list"><span aria-hidden="true">&#8635;</span> Refresh</button></div>
+      <ul id="device-list" class="device-list" role="radiogroup" aria-label="Target drive"></ul>
+      <p id="device-empty" class="summary summary-empty" aria-live="polite">Scanning for removable drives&hellip;</p>
+      <div class="screen-actions"><button id="drive-back-btn" class="btn btn-secondary" type="button">Back</button><button id="drive-continue-btn" class="btn btn-primary btn-auto" type="button" disabled>Continue</button></div>
     </section>
 
-    <section class="step" data-step="3">
-      <div class="step-index">03</div>
-      <div class="step-body">
-        <h2>Write</h2>
-        <label class="checkbox-row">
-          <input type="checkbox" id="verify-checkbox" checked />
-          <span>Verify after writing (recommended)</span>
-        </label>
-        <div class="warning-banner" id="warning-banner">
-          Selecting a drive below will <strong>permanently erase everything on it.</strong>
-        </div>
-        <button id="flash-btn" class="btn btn-primary" disabled>Flash</button>
+    <section id="review-step" class="wizard-screen" data-screen="2" hidden>
+      <div class="screen-heading"><p class="eyebrow">Step 3 of 3</p><h2 tabindex="-1">Review and write</h2><p>Check the source and target carefully before continuing.</p></div>
+      <div class="review-flow">
+        <article class="review-card"><span class="card-label">Image</span><strong id="review-image-name">No image selected</strong><small id="review-image-meta"></small></article>
+        <span class="review-arrow" aria-hidden="true">&rarr;</span>
+        <article class="review-card target-card"><span class="card-label">Target drive</span><strong id="review-device-name">No drive selected</strong><small id="review-device-meta"></small></article>
       </div>
+      <label class="checkbox-row option-card"><input type="checkbox" id="verify-checkbox" checked /><span><strong>Verify after writing</strong><small>Recommended. Reads the image back to confirm it was written correctly.</small></span></label>
+      <div id="large-drive-warning" class="large-drive-warning hidden">This is a <strong>large drive</strong>. Double-check that it is not an internal or secondary storage drive.</div>
+      <label id="large-drive-confirm-row" class="checkbox-row option-card caution-card hidden"><input type="checkbox" id="large-drive-confirm-checkbox" /><span><strong>I have checked this large drive</strong><small>I am sure this is the correct target.</small></span></label>
+      <div class="warning-banner" id="warning-banner"><strong>Everything on the selected drive will be permanently erased.</strong> This action cannot be undone.</div>
+      <div class="screen-actions"><button id="review-back-btn" class="btn btn-secondary" type="button">Back</button><button id="flash-btn" class="btn btn-primary btn-auto" type="button" disabled>Erase drive and write image</button></div>
     </section>
   </main>
 
-  <div id="confirm-modal" class="modal-backdrop hidden">
-    <div class="modal">
-      <h3>Erase and write to this drive?</h3>
-      <p id="confirm-detail" class="confirm-detail"></p>
-      <p class="confirm-warning">This cannot be undone. All data on the drive will be lost.</p>
-      <div id="large-drive-warning" class="large-drive-warning hidden">
-        This is a <strong>large drive</strong>. Flash drives are usually well under this size —
-        double-check this isn't an internal or secondary storage drive before continuing.
-      </div>
-      <label id="large-drive-confirm-row" class="checkbox-row hidden">
-        <input type="checkbox" id="large-drive-confirm-checkbox" />
-        <span>Yes, I'm sure this is the right drive</span>
-      </label>
-      <div class="modal-actions">
-        <button id="confirm-cancel-btn" class="btn btn-ghost">Cancel</button>
-        <button id="confirm-proceed-btn" class="btn btn-primary">Yes, erase and write</button>
-      </div>
-    </div>
-  </div>
-
   <main id="progress-view" class="progress-view hidden">
-    <h2 id="progress-phase-label">Starting&hellip;</h2>
-    <div class="progress-track">
-      <div id="progress-fill" class="progress-fill" style="width: 0%"></div>
-    </div>
-    <p id="progress-detail" class="progress-detail">&nbsp;</p>
-    <div id="result-banner" class="result-banner hidden"></div>
-    <button id="done-btn" class="btn btn-secondary hidden">Done</button>
+    <div class="progress-icon" aria-hidden="true"></div><p class="eyebrow">Writing image</p><h2 id="progress-phase-label" aria-live="polite">Starting&hellip;</h2>
+    <div id="progress-track" class="progress-track" role="progressbar" aria-label="Flash progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div id="progress-fill" class="progress-fill" style="width: 0%"></div></div>
+    <p id="progress-detail" class="progress-detail" aria-live="polite">&nbsp;</p><button id="cancel-btn" class="btn btn-danger hidden" type="button">Cancel</button>
+    <div id="result-banner" class="result-banner hidden" aria-live="assertive"></div><button id="done-btn" class="btn btn-secondary hidden" type="button">Done</button>
   </main>
 
   <script src="main.js"></script>

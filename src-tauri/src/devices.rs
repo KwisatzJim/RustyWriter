@@ -56,6 +56,20 @@ fn disk_info(id: &str) -> anyhow::Result<Option<DeviceInfo>> {
         return Ok(None);
     }
 
+    // Mounted DMGs also report Internal=false and Removable=true, so
+    // checking only the Internal flag makes every attached disk image
+    // appear as a flash target. They are virtual devices, not physical
+    // media, and must never clutter the picker or reach the writer.
+    let is_virtual = dict
+        .get("VirtualOrPhysical")
+        .and_then(|v| v.as_string())
+        == Some("Virtual");
+    let is_disk_image = dict.get("BusProtocol").and_then(|v| v.as_string())
+        == Some("Disk Image");
+    if is_virtual || is_disk_image {
+        return Ok(None);
+    }
+
     let name = dict
         .get("MediaName")
         .and_then(|v| v.as_string())
@@ -79,6 +93,7 @@ fn disk_info(id: &str) -> anyhow::Result<Option<DeviceInfo>> {
 #[cfg(target_os = "linux")]
 pub fn list_devices() -> anyhow::Result<Vec<DeviceInfo>> {
     let mut devices = Vec::new();
+    let root_backing_disks = linux_root_backing_disks();
 
     for entry in std::fs::read_dir("/sys/block")? {
         let entry = entry?;
@@ -98,8 +113,25 @@ pub fn list_devices() -> anyhow::Result<Vec<DeviceInfo>> {
             .unwrap_or_default()
             .trim()
             == "1";
-        if !removable {
-            continue; // never offer an internal, non-removable disk
+        let usb_attached = std::fs::canonicalize(entry.path())
+            .map(|path| {
+                path.components().any(|component| {
+                    component
+                        .as_os_str()
+                        .to_str()
+                        .is_some_and(|part| part.starts_with("usb"))
+                })
+            })
+            .unwrap_or(false);
+        if !removable && !usb_attached {
+            continue;
+        }
+
+        // A Linux installation can itself be booted from USB. Never
+        // offer the physical disk backing the current root filesystem,
+        // including roots layered through LUKS/device-mapper.
+        if root_backing_disks.contains(&name) {
+            continue;
         }
 
         let size_sectors: u64 = std::fs::read_to_string(entry.path().join("size"))
@@ -129,4 +161,63 @@ pub fn list_devices() -> anyhow::Result<Vec<DeviceInfo>> {
     }
 
     Ok(devices)
+}
+
+#[cfg(target_os = "linux")]
+fn linux_root_backing_disks() -> std::collections::HashSet<String> {
+    let Some(device_number) = std::fs::read_to_string("/proc/self/mountinfo")
+        .ok()
+        .and_then(|mountinfo| {
+            mountinfo.lines().find_map(|line| {
+                let fields: Vec<_> = line.split_whitespace().collect();
+                (fields.get(4) == Some(&"/"))
+                    .then(|| fields.get(2).map(|value| value.to_string()))
+                    .flatten()
+            })
+        })
+    else {
+        return std::collections::HashSet::new();
+    };
+
+    let mut disks = std::collections::HashSet::new();
+    collect_linux_backing_disks(
+        &std::path::Path::new("/sys/dev/block").join(device_number),
+        &mut disks,
+    );
+    disks
+}
+
+#[cfg(target_os = "linux")]
+fn collect_linux_backing_disks(
+    device: &std::path::Path,
+    disks: &mut std::collections::HashSet<String>,
+) {
+    let Ok(device) = std::fs::canonicalize(device) else {
+        return;
+    };
+
+    let slaves = device.join("slaves");
+    if let Ok(entries) = std::fs::read_dir(slaves) {
+        let mut found_slave = false;
+        for entry in entries.flatten() {
+            found_slave = true;
+            collect_linux_backing_disks(&entry.path(), disks);
+        }
+        if found_slave {
+            return;
+        }
+    }
+
+    let components: Vec<_> = device.components().collect();
+    if let Some(block_index) = components
+        .iter()
+        .position(|component| component.as_os_str() == "block")
+    {
+        if let Some(name) = components
+            .get(block_index + 1)
+            .and_then(|component| component.as_os_str().to_str())
+        {
+            disks.insert(name.to_string());
+        }
+    }
 }
