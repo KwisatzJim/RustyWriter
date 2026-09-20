@@ -95,7 +95,10 @@ pub fn available_staging_bytes() -> Result<u64> {
         return Err(std::io::Error::last_os_error()).context("checking free temporary-disk space");
     }
     let stats = unsafe { stats.assume_init() };
-    let available = (stats.f_bavail as u64).saturating_mul(stats.f_frsize);
+    #[cfg(target_os = "linux")]
+    let available = stats.f_bavail.saturating_mul(stats.f_frsize);
+    #[cfg(not(target_os = "linux"))]
+    let available = u64::from(stats.f_bavail).saturating_mul(stats.f_frsize);
     // Do not consume the final 256 MiB of the system's temporary
     // volume. Leaving a reserve prevents staging from destabilizing
     // the OS and gives cleanup enough room to complete normally.
