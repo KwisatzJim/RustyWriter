@@ -1,3 +1,4 @@
+mod device_identity;
 mod platform;
 mod progress;
 
@@ -6,8 +7,7 @@ use clap::Parser;
 use progress::{Progress, ProgressWriter};
 use sha2::{Digest, Sha256};
 use std::fs::File;
-use std::io::Read;
-use std::io::Write;
+use std::io::{Read, Seek, Write};
 use std::path::PathBuf;
 
 #[derive(Debug, thiserror::Error)]
@@ -37,6 +37,10 @@ struct Args {
     /// block device (/dev/sdX).
     #[arg(long)]
     device: PathBuf,
+
+    /// OS identity for this attachment of the confirmed disk.
+    #[arg(long)]
+    device_instance: u64,
 
     /// Re-read the device after writing and compare a hash against
     /// the source image.
@@ -94,6 +98,7 @@ fn run(args: &Args, progress: &mut ProgressWriter) -> Result<()> {
     check_cancelled(args)?;
 
     progress.emit(&Progress::Unmounting);
+    platform::check_device_path(&args.device, args.device_instance)?;
     platform::unmount_device(&args.device).context("unmounting target device")?;
     check_cancelled(args)?;
 
@@ -102,7 +107,7 @@ fn run(args: &Args, progress: &mut ProgressWriter) -> Result<()> {
         .len();
     let mut source = File::open(&args.image).context("opening staged image")?;
 
-    let mut device_file = File::options().write(true).open(&args.device).map_err(|e| {
+    let mut device_file = platform::open_device(&args.device, args.verify).map_err(|e| {
         #[cfg(target_os = "macos")]
         if e.raw_os_error() == Some(1) {
             // EPERM opening a raw disk device on macOS almost always
@@ -121,6 +126,8 @@ fn run(args: &Args, progress: &mut ProgressWriter) -> Result<()> {
             args.device.display()
         ))
     })?;
+
+    platform::check_open_device(&device_file, &args.device, args.device_instance)?;
 
     let mut hasher = Sha256::new();
     let mut buf = vec![0u8; CHUNK_SIZE];
@@ -155,34 +162,13 @@ fn run(args: &Args, progress: &mut ProgressWriter) -> Result<()> {
     });
 
     device_file.flush().context("flushing writes to device")?;
-    if let Err(e) = device_file.sync_all() {
-        // macOS's sync_all() uses F_FULLFSYNC, which raw disk device
-        // nodes (/dev/rdiskN) don't support - it fails with ENOTTY
-        // ("Inappropriate ioctl for device") even though the write
-        // itself already succeeded (raw devices are unbuffered at
-        // the OS level, unlike regular files). Fall back to a plain
-        // fsync, and if even that isn't supported, proceed anyway -
-        // we're already past the point where the data matters.
-        #[cfg(unix)]
-        {
-            use std::os::unix::io::AsRawFd;
-            let rc = unsafe { libc::fsync(device_file.as_raw_fd()) };
-            if rc != 0 {
-                eprintln!("warning: could not sync device after writing, continuing anyway: {e}");
-            }
-        }
-        #[cfg(not(unix))]
-        {
-            eprintln!("warning: could not sync device after writing, continuing anyway: {e}");
-        }
-    }
-    drop(device_file);
+    platform::sync_device(&device_file).context("synchronizing writes to the device")?;
 
     let source_hash = hasher.finalize();
     let mut verified = false;
 
     if args.verify {
-        let mut device_read = File::open(&args.device).context("reopening device for verification")?;
+        device_file.rewind().context("rewinding device for verification")?;
         let mut verify_hasher = Sha256::new();
         let mut remaining = bytes_written;
         let mut verified_bytes: u64 = 0;
@@ -191,7 +177,7 @@ fn run(args: &Args, progress: &mut ProgressWriter) -> Result<()> {
         while remaining > 0 {
             check_cancelled(args)?;
             let want = remaining.min(CHUNK_SIZE as u64) as usize;
-            let n = device_read
+            let n = device_file
                 .read(&mut buf[..want])
                 .context("reading back from device during verification")?;
             if n == 0 {
@@ -225,12 +211,16 @@ fn run(args: &Args, progress: &mut ProgressWriter) -> Result<()> {
         verified = true;
     }
 
+    drop(device_file);
     progress.emit(&Progress::Ejecting);
-    let eject_warning = platform::eject_device(&args.device).err().map(|error| {
-        format!(
-            "The image was written successfully, but the drive could not be ejected automatically: {error:#}. Eject it manually before disconnecting it."
-        )
-    });
+    let eject_warning = platform::check_device_path(&args.device, args.device_instance)
+        .and_then(|()| platform::eject_device(&args.device))
+        .err()
+        .map(|error| {
+            format!(
+                "The image was written successfully, but the drive could not be ejected automatically: {error:#}. Eject it manually before disconnecting it."
+            )
+        });
 
     progress.emit(&Progress::Done {
         success: true,

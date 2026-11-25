@@ -6,6 +6,7 @@ const state = {
   image: null, // { path, name, sizeBytes }
   devices: [],
   selectedDeviceId: null,
+  selectedDeviceInstance: null,
   currentStep: 0,
 };
 
@@ -185,15 +186,13 @@ async function loadDevices() {
     if (revision !== deviceLoadRevision) return;
 
     state.devices = devices;
-    if (!state.devices.some((device) => device.id === state.selectedDeviceId)) {
-      state.selectedDeviceId = null;
-    }
+    if (!selectedDevice()) clearDriveSelection();
     empty.textContent = "No removable physical drives detected";
   } catch (e) {
     if (revision !== deviceLoadRevision) return;
     console.error("failed to list devices", e);
     state.devices = [];
-    state.selectedDeviceId = null;
+    clearDriveSelection();
     empty.textContent = `Could not scan for removable drives: ${String(e)}`;
   } finally {
     if (revision === deviceLoadRevision) {
@@ -221,7 +220,7 @@ function renderDevices() {
     li.className = "device-item";
     li.tabIndex = 0;
     li.setAttribute("role", "radio");
-    const isSelected = dev.id === state.selectedDeviceId;
+    const isSelected = dev === selectedDevice();
     li.setAttribute("aria-checked", String(isSelected));
     if (isSelected) li.classList.add("selected");
     const isLarge = dev.size_bytes >= LARGE_DRIVE_BYTES;
@@ -246,7 +245,9 @@ function renderDevices() {
 
     li.append(dot, name, meta);
     const selectDrive = () => {
+      if (dev !== selectedDevice()) clearDriveSelection();
       state.selectedDeviceId = dev.id;
+      state.selectedDeviceInstance = dev.instance;
       renderDevices();
       updateFlashButtonState();
       showWizardStep(state.currentStep, { focus: false });
@@ -273,8 +274,15 @@ loadDevices();
 
 // ---- Step 3: review + flash ---------------------------------------------
 
+function clearDriveSelection() {
+  state.selectedDeviceId = null;
+  state.selectedDeviceInstance = null;
+  el("large-drive-confirm-checkbox").checked = false;
+}
+
 function selectedDevice() {
-  return state.devices.find((d) => d.id === state.selectedDeviceId) || null;
+  return state.devices.find((device) => device.id === state.selectedDeviceId &&
+    device.instance === state.selectedDeviceInstance) || null;
 }
 
 function updateReview() {
@@ -332,6 +340,7 @@ async function startFlash() {
       req: {
         image_path: state.image.path,
         device_id: dev.id,
+        device_instance: dev.instance,
         verify: el("verify-checkbox").checked,
       },
     });
@@ -449,13 +458,12 @@ el("done-btn").addEventListener("click", () => {
   el("progress-view").classList.add("hidden");
   el("setup-view").classList.remove("hidden");
   state.image = null;
-  state.selectedDeviceId = null;
+  clearDriveSelection();
   const summary = el("image-summary");
   summary.classList.add("summary-empty");
   summary.textContent = "No image selected";
   el("drive-image-name").textContent = "No image selected";
   el("drive-image-meta").textContent = "";
-  el("large-drive-confirm-checkbox").checked = false;
   updateFlashButtonState();
   showWizardStep(0);
   loadDevices();

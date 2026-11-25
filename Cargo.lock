@@ -2592,7 +2592,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "rustywriter-helper"
+name = "rustywriter-flash-worker"
 version = "0.1.0"
 dependencies = [
  "anyhow",

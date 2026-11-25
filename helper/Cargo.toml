@@ -1,5 +1,5 @@
 [package]
-name = "rustywriter-helper"
+name = "rustywriter-flash-worker"
 version = "0.1.0"
 edition = "2021"
 description = "Privileged worker for RustyWriter. Not meant to be run directly by users."

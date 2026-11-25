@@ -23,23 +23,13 @@ impl ProgressFile {
             "rustywriter-progress-{}.jsonl",
             uuid::Uuid::new_v4()
         ));
-        tokio::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
+        let mut options = tokio::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        options.open(&path)
             .await
             .context("creating the progress file")?;
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            // The app owns the file and can delete it. The elevated
-            // helper only needs append access, not permission to read
-            // earlier progress or replace the path.
-            tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o622))
-                .await
-                .context("setting progress-file permissions")?;
-        }
 
         Ok(Self { path })
     }
@@ -78,19 +68,21 @@ impl Drop for StagedHelper {
 pub struct FlashRequest {
     pub image_path: String,
     pub device_id: String,
+    pub device_instance: String,
     pub verify: bool,
 }
 
 fn validate_flash_target<'a>(
     devices: &'a [crate::devices::DeviceInfo],
     requested_id: &str,
+    requested_instance: &str,
     image_size: u64,
 ) -> anyhow::Result<&'a crate::devices::DeviceInfo> {
     if image_size == 0 {
         anyhow::bail!("the selected image is empty; no data was written");
     }
 
-    let device = find_flash_target(devices, requested_id)?;
+    let device = find_flash_target(devices, requested_id, requested_instance)?;
 
     if image_size > device.size_bytes {
         anyhow::bail!(
@@ -107,10 +99,11 @@ fn validate_flash_target<'a>(
 fn find_flash_target<'a>(
     devices: &'a [crate::devices::DeviceInfo],
     requested_id: &str,
+    requested_instance: &str,
 ) -> anyhow::Result<&'a crate::devices::DeviceInfo> {
     let device = devices
         .iter()
-        .find(|device| device.id == requested_id)
+        .find(|device| device.id == requested_id && device.instance == requested_instance)
         .ok_or_else(|| {
             anyhow::anyhow!(
                 "the selected target is no longer an allowed removable drive; reconnect it, refresh the drive list, and select it again"
@@ -275,7 +268,7 @@ async fn run_flash(
     // it never runs into macOS's protected-folder (Desktop/Documents/
     // Downloads) permission model at all.
     let initial_devices = crate::devices::list_devices().context("refreshing the removable drive list")?;
-    let initial_device = find_flash_target(&initial_devices, &req.device_id)?;
+    let initial_device = find_flash_target(&initial_devices, &req.device_id, &req.device_instance)?;
     let staging_space = crate::image_source::available_staging_bytes()?;
     let stage_limits = crate::image_source::StageLimits {
         target_bytes: initial_device.size_bytes,
@@ -313,13 +306,13 @@ async fn run_flash(
             .len();
         let current_devices =
             crate::devices::list_devices().context("refreshing the removable drive list")?;
-        let device = validate_flash_target(&current_devices, &req.device_id, staged_size)?;
+        let device = validate_flash_target(&current_devices, &req.device_id, &req.device_instance, staged_size)?;
 
         run_helper(
             &app,
             helper_path(&helper),
             &staged.path,
-            &device.write_path,
+            device,
             &cancel_path,
             req.verify,
         )
@@ -360,7 +353,7 @@ async fn run_helper(
     app: &AppHandle,
     helper: &Path,
     staged_image: &std::path::Path,
-    device_path: &str,
+    device: &crate::devices::DeviceInfo,
     cancel_path: &Path,
     verify: bool,
 ) -> anyhow::Result<()> {
@@ -371,7 +364,9 @@ async fn run_helper(
         "--image".to_string(),
         staged_image.to_string_lossy().to_string(),
         "--device".to_string(),
-        device_path.to_string(),
+        device.write_path.clone(),
+        "--device-instance".to_string(),
+        device.instance.clone(),
         "--progress-file".to_string(),
         progress_path.to_string_lossy().to_string(),
         "--cancel-file".to_string(),
@@ -470,6 +465,7 @@ mod tests {
     fn removable_drive(size_bytes: u64) -> DeviceInfo {
         DeviceInfo {
             id: "test-drive".to_string(),
+            instance: "1".to_string(),
             name: "Test Drive".to_string(),
             write_path: "/dev/test-drive".to_string(),
             size_bytes,
@@ -478,28 +474,36 @@ mod tests {
 
     #[test]
     fn rejects_a_target_that_is_no_longer_listed() {
-        let error = validate_flash_target(&[], "test-drive", 1024).unwrap_err();
+        let error = validate_flash_target(&[], "test-drive", "1", 1024).unwrap_err();
+        assert!(error.to_string().contains("no longer"));
+    }
+
+    #[test]
+    fn rejects_a_replacement_using_the_same_disk_name() {
+        let devices = [removable_drive(2048)];
+        let error = validate_flash_target(&devices, "test-drive", "old-instance", 1024)
+            .unwrap_err();
         assert!(error.to_string().contains("no longer"));
     }
 
     #[test]
     fn rejects_an_empty_image() {
         let devices = [removable_drive(2048)];
-        let error = validate_flash_target(&devices, "test-drive", 0).unwrap_err();
+        let error = validate_flash_target(&devices, "test-drive", "1", 0).unwrap_err();
         assert!(error.to_string().contains("empty"));
     }
 
     #[test]
     fn rejects_an_image_larger_than_the_drive() {
         let devices = [removable_drive(1024)];
-        let error = validate_flash_target(&devices, "test-drive", 2048).unwrap_err();
+        let error = validate_flash_target(&devices, "test-drive", "1", 2048).unwrap_err();
         assert!(error.to_string().contains("only holds 1024 bytes"));
     }
 
     #[test]
     fn accepts_an_image_that_fits() {
         let devices = [removable_drive(2048)];
-        let selected = validate_flash_target(&devices, "test-drive", 1024).unwrap();
+        let selected = validate_flash_target(&devices, "test-drive", "1", 1024).unwrap();
         assert_eq!(selected.write_path, "/dev/test-drive");
     }
 
@@ -508,6 +512,11 @@ mod tests {
         let progress = ProgressFile::create().await.unwrap();
         let path = progress.path.clone();
         assert!(path.exists());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o077, 0);
+        }
 
         drop(progress);
 

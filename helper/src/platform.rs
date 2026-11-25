@@ -15,7 +15,7 @@ pub fn unmount_device(device: &Path) -> Result<()> {
         .context("running diskutil unmountDisk")?;
 
     let mounted = macos_mounted_partitions(device)?;
-    if !mounted.is_empty() {
+    if !output.status.success() || !mounted.is_empty() {
         let detail = String::from_utf8_lossy(if output.stderr.is_empty() {
             &output.stdout
         } else {
@@ -84,6 +84,11 @@ pub fn unmount_device(device: &Path) -> Result<()> {
         .file_name()
         .and_then(|n| n.to_str())
         .context("invalid device path")?;
+
+    anyhow::ensure!(
+        !crate::device_identity::mounted_btrfs_disks()?.contains(dev_name),
+        "the target is in use by a mounted Btrfs filesystem; unmount it before flashing"
+    );
 
     let block_dir = Path::new("/sys/block").join(dev_name);
     let mut device_nodes = vec![device.to_path_buf()];
@@ -155,5 +160,74 @@ fn linux_mounted_device_nodes(device_nodes: &[std::path::PathBuf]) -> Result<Vec
 pub fn eject_device(_device: &Path) -> Result<()> {
     // No universal equivalent of diskutil eject on Linux; a sync in
     // the caller after the write is what actually matters for safety.
+    Ok(())
+}
+
+pub fn open_device(path: &Path, verify: bool) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let mut options = std::fs::File::options();
+    options.read(verify).write(true);
+    #[cfg(target_os = "linux")]
+    options.custom_flags(libc::O_EXCL | libc::O_NOFOLLOW);
+    #[cfg(target_os = "macos")]
+    options.custom_flags(libc::O_NOFOLLOW);
+    options.open(path)
+}
+
+pub fn check_device_path(path: &Path, instance: u64) -> Result<()> {
+    let name = path.file_name().and_then(|name| name.to_str()).context("invalid device name")?;
+    #[cfg(target_os = "macos")]
+    let actual = crate::device_identity::device_identity(
+        name.strip_prefix('r').context("expected a raw disk path")?,
+    )?;
+    #[cfg(target_os = "linux")]
+    let actual = crate::device_identity::device_identity(name)?;
+    anyhow::ensure!(actual == instance, "the confirmed drive was replaced; select it again");
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+pub fn check_open_device(file: &std::fs::File, _path: &Path, instance: u64) -> Result<()> {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::FileTypeExt;
+
+    anyhow::ensure!(file.metadata()?.file_type().is_block_device(), "expected a block device");
+    let mut actual = 0u64;
+    // BLKGETDISKSEQ returns the identity of the opened disk, even if its name is reused.
+    let result = unsafe { libc::ioctl(file.as_raw_fd(), libc::_IOR::<u64>(0x12, 128), &mut actual) };
+    if result == -1 {
+        return Err(std::io::Error::last_os_error()).context("checking the opened drive identity");
+    }
+    anyhow::ensure!(actual == instance, "the confirmed drive was replaced; select it again");
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+pub fn check_open_device(file: &std::fs::File, path: &Path, instance: u64) -> Result<()> {
+    use std::os::unix::fs::{FileTypeExt, MetadataExt};
+
+    let opened = file.metadata()?;
+    anyhow::ensure!(
+        opened.file_type().is_char_device() && opened.rdev() == std::fs::metadata(path)?.rdev(),
+        "the opened device does not match the confirmed raw disk"
+    );
+    check_device_path(path, instance)
+}
+
+#[cfg(target_os = "linux")]
+pub fn sync_device(file: &std::fs::File) -> std::io::Result<()> {
+    file.sync_all()
+}
+
+#[cfg(target_os = "macos")]
+pub fn sync_device(file: &std::fs::File) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+
+    // DKIOCSYNCHRONIZECACHE is the raw disk's cache-flush ioctl in sys/disk.h.
+    const DKIOCSYNCHRONIZECACHE: libc::c_ulong = 0x2000_6416;
+    if unsafe { libc::ioctl(file.as_raw_fd(), DKIOCSYNCHRONIZECACHE) } == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
     Ok(())
 }

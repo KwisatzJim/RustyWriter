@@ -2,6 +2,8 @@
 // builds (harmless no-op on macOS/Linux).
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+#[path = "../../helper/src/device_identity.rs"]
+mod device_identity;
 mod devices;
 mod flash;
 mod image_source;

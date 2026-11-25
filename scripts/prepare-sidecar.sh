@@ -11,7 +11,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 echo "Building rustywriter-helper (release)..."
-cargo build --release -p rustywriter-helper
+cargo build --release -p rustywriter-flash-worker
 
 TRIPLE="$(rustc -vV | sed -n 's/host: //p')"
 if [ -z "$TRIPLE" ]; then

@@ -5,6 +5,7 @@ use std::process::Command;
 #[derive(Serialize, Clone, Debug)]
 pub struct DeviceInfo {
     pub id: String,
+    pub instance: String,
     pub name: String,
     /// Path to hand to the helper for writing. On macOS this is the
     /// *raw* device (/dev/rdiskN) — writing through the raw device
@@ -43,6 +44,7 @@ pub fn list_devices() -> anyhow::Result<Vec<DeviceInfo>> {
 
 #[cfg(target_os = "macos")]
 fn disk_info(id: &str) -> anyhow::Result<Option<DeviceInfo>> {
+    let instance = crate::device_identity::device_identity(id)?;
     let output = Command::new("diskutil").args(["info", "-plist", id]).output()?;
     let plist_val: plist::Value = plist::from_bytes(&output.stdout)?;
     let dict = plist_val
@@ -80,8 +82,13 @@ fn disk_info(id: &str) -> anyhow::Result<Option<DeviceInfo>> {
         .and_then(|v| v.as_unsigned_integer())
         .unwrap_or(0);
 
+    if crate::device_identity::device_identity(id)? != instance {
+        return Ok(None);
+    }
+
     Ok(Some(DeviceInfo {
         id: id.to_string(),
+        instance: instance.to_string(),
         name,
         write_path: format!("/dev/r{id}"),
         size_bytes,
@@ -93,7 +100,7 @@ fn disk_info(id: &str) -> anyhow::Result<Option<DeviceInfo>> {
 #[cfg(target_os = "linux")]
 pub fn list_devices() -> anyhow::Result<Vec<DeviceInfo>> {
     let mut devices = Vec::new();
-    let root_backing_disks = linux_root_backing_disks();
+    let root_backing_disks = linux_root_backing_disks()?;
 
     for entry in std::fs::read_dir("/sys/block")? {
         let entry = entry?;
@@ -108,6 +115,10 @@ pub fn list_devices() -> anyhow::Result<Vec<DeviceInfo>> {
         {
             continue;
         }
+
+        let Ok(instance) = crate::device_identity::device_identity(&name) else {
+            continue;
+        };
 
         let removable = std::fs::read_to_string(entry.path().join("removable"))
             .unwrap_or_default()
@@ -152,8 +163,12 @@ pub fn list_devices() -> anyhow::Result<Vec<DeviceInfo>> {
         let display_name = format!("{vendor} {model}").trim().to_string();
         let display_name = if display_name.is_empty() { name.clone() } else { display_name };
 
+        if crate::device_identity::device_identity(&name).ok() != Some(instance) {
+            continue;
+        }
         devices.push(DeviceInfo {
             id: name.clone(),
+            instance: instance.to_string(),
             name: display_name,
             write_path: format!("/dev/{name}"),
             size_bytes,
@@ -164,60 +179,25 @@ pub fn list_devices() -> anyhow::Result<Vec<DeviceInfo>> {
 }
 
 #[cfg(target_os = "linux")]
-fn linux_root_backing_disks() -> std::collections::HashSet<String> {
-    let Some(device_number) = std::fs::read_to_string("/proc/self/mountinfo")
-        .ok()
-        .and_then(|mountinfo| {
-            mountinfo.lines().find_map(|line| {
-                let fields: Vec<_> = line.split_whitespace().collect();
-                (fields.get(4) == Some(&"/"))
-                    .then(|| fields.get(2).map(|value| value.to_string()))
-                    .flatten()
-            })
-        })
-    else {
-        return std::collections::HashSet::new();
-    };
+fn linux_root_backing_disks() -> anyhow::Result<std::collections::HashSet<String>> {
+    use anyhow::Context;
+    use std::path::Path;
 
+    let mountinfo = std::fs::read_to_string("/proc/self/mountinfo")?;
+    let (mount, filesystem) = mountinfo
+        .lines()
+        .filter_map(|line| line.split_once(" - "))
+        .find(|(mount, _)| mount.split_whitespace().nth(4) == Some("/"))
+        .context("could not identify the root filesystem")?;
     let mut disks = std::collections::HashSet::new();
-    collect_linux_backing_disks(
-        &std::path::Path::new("/sys/dev/block").join(device_number),
-        &mut disks,
-    );
-    disks
-}
-
-#[cfg(target_os = "linux")]
-fn collect_linux_backing_disks(
-    device: &std::path::Path,
-    disks: &mut std::collections::HashSet<String>,
-) {
-    let Ok(device) = std::fs::canonicalize(device) else {
-        return;
-    };
-
-    let slaves = device.join("slaves");
-    if let Ok(entries) = std::fs::read_dir(slaves) {
-        let mut found_slave = false;
-        for entry in entries.flatten() {
-            found_slave = true;
-            collect_linux_backing_disks(&entry.path(), disks);
-        }
-        if found_slave {
-            return;
-        }
+    if filesystem.split_whitespace().next() == Some("btrfs") {
+        // Btrfs uses a synthetic mount device number. Protect all mounted
+        // Btrfs members when the root is Btrfs, including multi-device roots.
+        disks = crate::device_identity::mounted_btrfs_disks()?;
+        anyhow::ensure!(!disks.is_empty(), "could not identify the Btrfs root's backing disks");
+    } else {
+        let number = mount.split_whitespace().nth(2).context("missing root device number")?;
+        crate::device_identity::collect_linux_backing_disks(&Path::new("/sys/dev/block").join(number), &mut disks);
     }
-
-    let components: Vec<_> = device.components().collect();
-    if let Some(block_index) = components
-        .iter()
-        .position(|component| component.as_os_str() == "block")
-    {
-        if let Some(name) = components
-            .get(block_index + 1)
-            .and_then(|component| component.as_os_str().to_str())
-        {
-            disks.insert(name.to_string());
-        }
-    }
+    Ok(disks)
 }

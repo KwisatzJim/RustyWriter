@@ -121,7 +121,7 @@ directly, so `frontendDist` in `tauri.conf.json` just points at `ui/`.
 ### Dev
 
 ```bash
-cargo build -p rustywriter-helper   # build the helper once
+cargo build -p rustywriter-flash-worker   # build the helper once
 cargo tauri dev
 ```
 
@@ -211,12 +211,17 @@ in its error message.
   they'd ever reach a DOM drop event.
 - **Target revalidation**: the frontend sends a device identifier, not
   a writable path. The Rust backend rebuilds its removable-drive
-  allow-list after staging and uses the freshly discovered path.
+  allow-list after staging and confirms the drive is still the same device
+  instance. The helper checks identity again after authentication and before
+  writing. Linux requires a kernel that exposes disk sequence numbers
+  through both sysfs and the block-device ioctl.
 - **Capacity and free-space checks**: staging stops before the
   decompressed image can exceed the selected drive or consume the
   final 256 MiB of temporary-disk space.
 - **Fail-closed unmounting**: the helper independently confirms that
-  no target filesystem remains mounted before opening the device.
+  no target filesystem remains mounted before writing. On Linux, unmount
+  Btrfs targets manually before flashing. When Linux boots from Btrfs,
+  mounted Btrfs member drives are excluded from the picker.
 - **Verification**: optional SHA-256 verification re-reads exactly the
   bytes written and compares them with the source hash.
 - **Cancellation**: staging, writing, and verification can be

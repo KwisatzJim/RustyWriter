@@ -13,4 +13,5 @@ fi
 ./scripts/prepare-sidecar.sh
 
 echo "Building RustyWriter for macOS..."
-cargo tauri build --bundles dmg
+# Tauri checks CI=true to skip Finder AppleScript during DMG creation.
+CI=true cargo tauri build --bundles dmg

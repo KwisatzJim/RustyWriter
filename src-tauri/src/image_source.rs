@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use flate2::read::GzDecoder;
+use flate2::read::MultiGzDecoder;
 use std::fs::{self, File};
 use std::io::{Read, Seek, Write};
 use std::path::{Path, PathBuf};
@@ -205,7 +205,7 @@ fn stage_image_to(
 
     match format {
         ImageFormat::Raw => copy_all!(File::open(source_path)?, total_hint),
-        ImageFormat::Gzip => copy_all!(GzDecoder::new(File::open(source_path)?), total_hint),
+        ImageFormat::Gzip => copy_all!(MultiGzDecoder::new(File::open(source_path)?), total_hint),
         ImageFormat::Xz => copy_all!(XzDecoder::new(File::open(source_path)?), total_hint),
         ImageFormat::Zip => {
             let file = File::open(source_path)?;
@@ -252,6 +252,32 @@ mod tests {
         let mut archive = zip_with_files(&[("first.img", b"one"), ("second.iso", b"two")]);
         let error = select_zip_entry(&mut archive).unwrap_err();
         assert!(error.to_string().contains("unambiguous"));
+    }
+
+    #[test]
+    fn stages_every_member_of_a_concatenated_gzip() {
+        use flate2::{write::GzEncoder, Compression};
+
+        let id = uuid::Uuid::new_v4();
+        let source = crate::shared_temp_dir().join(format!("rustywriter-test-{id}.gz"));
+        let destination = crate::shared_temp_dir().join(format!("rustywriter-test-{id}.img"));
+        let mut compressed = Vec::new();
+        for member in [b"first".as_slice(), b"second".as_slice()] {
+            let mut encoder = GzEncoder::new(&mut compressed, Compression::default());
+            encoder.write_all(member).unwrap();
+            encoder.finish().unwrap();
+        }
+        fs::write(&source, compressed).unwrap();
+        let result = stage_image_to(
+            &source,
+            destination,
+            StageLimits { target_bytes: 1024, temporary_bytes: 1024 },
+            || false,
+            |_, _| {},
+        );
+        fs::remove_file(&source).unwrap();
+        let staged = result.unwrap();
+        assert_eq!(fs::read(&staged.path).unwrap(), b"firstsecond");
     }
 
     #[test]
